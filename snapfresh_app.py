@@ -1,128 +1,105 @@
+# SnapFresh: Accurate Food Freshness Detection using MobileNetV2
+
 import streamlit as st
 from PIL import Image
-import requests
-from io import BytesIO
-import time
-import random
-import datetime
 import numpy as np
+import os
+import shutil
+import requests
+import zipfile
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
+from tensorflow.keras import layers, models
+import datetime
 
+# Set page config
 st.set_page_config(page_title="SnapFresh", layout="centered")
 
-# Session State Init
-if "model_trained" not in st.session_state:
-    st.session_state["model_trained"] = False
-if "training_food" not in st.session_state:
-    st.session_state["training_food"] = None
-if "training_dataset" not in st.session_state:
-    st.session_state["training_dataset"] = {"fresh": [], "moderate": [], "rotten": []}
-if "history" not in st.session_state:
-    st.session_state["history"] = []
+# Step 1: Prepare directories
+DATA_DIR = "snapfresh_data"
+MODEL_PATH = "snapfresh_model.h5"
+CATEGORIES = ["fresh", "moderate", "rotten"]
 
-# Parameters
-categories = ["fresh", "moderate", "rotten"]
-status_color = {
-    "fresh": "🟢 Safe to Consume",
-    "moderate": "🟡 Consume Soon",
-    "rotten": "🔴 Unsafe"
-}
-status_note = {
-    "fresh": "Enjoy your food safely!",
-    "moderate": "Try to use this item within the next day or two.",
-    "rotten": "Dispose of the item to avoid health risks."
-}
-spoilage_days_map = {
-    "fresh": 5,
-    "moderate": 2,
-    "rotten": 0
-}
+os.makedirs(DATA_DIR, exist_ok=True)
+for cat in CATEGORIES:
+    os.makedirs(os.path.join(DATA_DIR, cat), exist_ok=True)
 
-# Helper Functions
-
-def fetch_images_for_stage(food_name, stage):
-    query = f"{food_name} {stage} site:unsplash.com"
-    search_templates = {
-        "fresh": "photo-1528825871115-3581a5387919",
-        "moderate": "photo-1571847149542-70c0cd361bc9",
-        "rotten": "photo-1504674900247-0877df9cc836"
-    }
-    pid = search_templates[stage]
-    url = f"https://images.unsplash.com/{pid}?auto=format&fit=crop&w=224&q=80"
-    return [url] * 4  # duplicate to simulate dataset
-
-def auto_train_model(food_name):
-    dataset = {"fresh": [], "moderate": [], "rotten": []}
-    for stage in categories:
-        urls = fetch_images_for_stage(food_name, stage)
-        st.info(f"Downloading '{stage}' images...")
-        for url in urls:
-            try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
-                    img = Image.open(BytesIO(response.content)).convert("RGB")
-                    dataset[stage].append(img)
-            except:
-                pass
-            time.sleep(0.2)
-    return dataset
-
-def simulated_predict(user_img, dataset):
-    # Simulate prediction by randomly selecting one of the trained labels
-    return random.choice(list(dataset.keys()))
-
-# UI
-
-st.markdown("<h1 style='text-align: center;'>📱 SnapFresh</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center;'>AI-powered Food Freshness Detection (Trained by Stage)</h4>", unsafe_allow_html=True)
+# Step 2: UI - Header
+st.markdown("<h1 style='text-align: center;'>\U0001F4F1 SnapFresh</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center;'>AI-powered Food Freshness Detection</h4>", unsafe_allow_html=True)
 st.divider()
 
-if not st.session_state["model_trained"]:
-    food_name = st.text_input("Enter a food item to train the model (e.g., tomato, apple):", "")
-    if st.button("Train Model"):
-        if food_name.strip() == "":
-            st.error("Please enter a valid food name.")
-        else:
-            with st.spinner(f"Training model with 'fresh', 'moderate', and 'rotten' samples..."):
-                dataset = auto_train_model(food_name.strip().lower())
-                st.session_state["training_dataset"] = dataset
-                st.session_state["training_food"] = food_name.strip().lower()
-                st.session_state["model_trained"] = True
-            st.success("Training complete!")
+# Step 3: Train Section
+with st.expander("\U0001F52C Train Model (One-Time)", expanded=True):
+    food_item = st.text_input("Enter a food item (e.g., apple, tomato)", value="apple")
 
-# Prediction UI
-if st.session_state["model_trained"]:
-    st.success(f"Model trained on images of '{st.session_state['training_food']}' in 3 stages.")
-    uploaded_file = st.file_uploader("Upload an image of your food item 🍅", type=["jpg", "jpeg", "png"])
+    def download_sample_images(food):
+        urls = {
+            "fresh": [
+                "https://images.unsplash.com/photo-1571847149542-70c0cd361bc9",
+            ],
+            "moderate": [
+                "https://images.unsplash.com/photo-1614514561184-73f84ec4eb17",
+            ],
+            "rotten": [
+                "https://images.unsplash.com/photo-1606188074045-40d7ae4f4816",
+            ]
+        }
+        for cat in CATEGORIES:
+            for i, url in enumerate(urls[cat]):
+                try:
+                    full_url = f"{url}?auto=format&fit=crop&w=224&q=80"
+                    response = requests.get(full_url, timeout=10)
+                    if response.status_code == 200:
+                        img = Image.open(BytesIO(response.content)).convert("RGB")
+                        img.save(os.path.join(DATA_DIR, cat, f"{cat}_{i}.jpg"))
+                except Exception as e:
+                    pass
 
+    if st.button("Download & Train Model"):
+        with st.spinner("Downloading and training..."):
+            download_sample_images(food_item)
+            datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+            train_gen = datagen.flow_from_directory(DATA_DIR, target_size=(224, 224), class_mode='categorical', subset='training')
+            val_gen = datagen.flow_from_directory(DATA_DIR, target_size=(224, 224), class_mode='categorical', subset='validation')
+
+            base_model = MobileNetV2(input_shape=(224, 224, 3), include_top=False, weights='imagenet')
+            base_model.trainable = False
+            model = models.Sequential([
+                base_model,
+                layers.GlobalAveragePooling2D(),
+                layers.Dense(3, activation='softmax')
+            ])
+
+            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+            model.fit(train_gen, validation_data=val_gen, epochs=3, verbose=1)
+            model.save(MODEL_PATH)
+        st.success("Model trained and saved!")
+
+# Step 4: Prediction Section
+if os.path.exists(MODEL_PATH):
+    model = load_model(MODEL_PATH)
+
+    uploaded_file = st.file_uploader("Upload a food image for prediction", type=["jpg", "jpeg", "png"])
     if uploaded_file:
-        user_img = Image.open(uploaded_file).convert("RGB")
-        resized_img = user_img.resize((300, 300))
+        img = Image.open(uploaded_file).convert("RGB")
+        resized = img.resize((224, 224))
+        img_array = np.array(resized) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
 
-        with st.spinner("Analyzing image..."):
-            label = simulated_predict(user_img, st.session_state["training_dataset"])
-            spoilage_days = spoilage_days_map[label]
-            spoilage_date = datetime.datetime.now() + datetime.timedelta(days=spoilage_days)
+        prediction = model.predict(img_array)[0]
+        label_idx = np.argmax(prediction)
+        label = CATEGORIES[label_idx]
 
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.image(resized_img, caption="Uploaded Image", use_container_width=True)
-        with col2:
-            st.markdown(f"### Verdict: {status_color[label]}")
-            st.info(status_note[label])
-            st.markdown(f"**Estimated Spoilage Date:** {spoilage_date.strftime('%Y-%m-%d')}")
+        spoilage_days_map = {"fresh": 5, "moderate": 2, "rotten": 0}
+        spoilage_date = datetime.datetime.now() + datetime.timedelta(days=spoilage_days_map[label])
 
-        st.session_state["history"].append({
-            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "result": label,
-            "spoilage_date": spoilage_date.strftime('%Y-%m-%d')
-        })
+        st.image(img, caption="Uploaded Image", width=300)
+        st.markdown(f"### Prediction: **{label.upper()}**")
+        st.markdown(f"**Estimated Spoilage Date:** {spoilage_date.strftime('%Y-%m-%d')}")
 
-    # History
-    if st.session_state["history"]:
-        st.markdown("### 📂 Scan History")
-        for entry in reversed(st.session_state["history"][-5:]):
-            st.markdown(f"- 🕒 {entry['timestamp']} — **{status_color[entry['result']]}**, Spoils by {entry['spoilage_date']}")
-
+# Step 5: Footer
 st.divider()
 st.caption("SnapFresh • 2025 Prototype")
-
