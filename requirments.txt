@@ -1,8 +1,7 @@
 streamlit
+Pillow
 scikit-learn
-pillow
-numpy
-requests
-beautifulsoup4
-lxml
-tensorflow
+torch
+torchvision
+duckduckgo_search
+
