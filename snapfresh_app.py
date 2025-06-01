@@ -4,112 +4,157 @@ import numpy as np
 import requests
 from io import BytesIO
 import datetime
+import random
+from sklearn.neighbors import KNeighborsClassifier
+import tensorflow as tf
+import tensorflow_hub as hub
 
-st.set_page_config(page_title="SnapFresh", layout="centered")
+st.set_page_config(page_title="SnapFresh - AI Food Freshness", layout="centered")
 
-# Categories and URLs (sample 3 images per category for demo)
-image_urls = {
-    "Good": [
-        "https://images.unsplash.com/photo-1567306226416-28f0efdc88ce?auto=format&fit=crop&w=224&q=80",
-        "https://images.unsplash.com/photo-1506806732259-39c2d0268443?auto=format&fit=crop&w=224&q=80",
-        "https://images.unsplash.com/photo-1528825871115-3581a5387919?auto=format&fit=crop&w=224&q=80",
-    ],
-    "Moderate": [
-        "https://images.unsplash.com/photo-1576085898320-8d952d5c9146?auto=format&fit=crop&w=224&q=80",
-        "https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=224&q=80",
-        "https://images.unsplash.com/photo-1573531435624-6ec6e9cdd5c0?auto=format&fit=crop&w=224&q=80",
-    ],
-    "Rotten": [
-        "https://images.unsplash.com/photo-1542831371-d531d36971e6?auto=format&fit=crop&w=224&q=80",
-        "https://images.unsplash.com/photo-1518976024611-48802c3c3ff9?auto=format&fit=crop&w=224&q=80",
-        "https://images.unsplash.com/photo-1508214751196-bcfd4ca60f91?auto=format&fit=crop&w=224&q=80",
-    ]
-}
+# Load MobileNetV2 feature extractor from TensorFlow Hub
+@st.cache_resource(show_spinner=False)
+def load_feature_extractor():
+    model_url = "https://tfhub.dev/google/tf2-preview/mobilenet_v2/feature_vector/4"
+    feature_extractor = hub.KerasLayer(model_url, input_shape=(224, 224, 3))
+    return feature_extractor
 
-# Manual simple KNN
-def euclidean_distance(a, b):
-    return np.sqrt(np.sum((a - b) ** 2))
+feature_extractor = load_feature_extractor()
 
-def knn_predict(test_feature, train_features, train_labels, k=3):
-    distances = [euclidean_distance(test_feature, f) for f in train_features]
-    idxs = np.argsort(distances)[:k]
-    votes = {}
-    for i in idxs:
-        votes[train_labels[i]] = votes.get(train_labels[i], 0) + 1
-    return max(votes, key=votes.get)
+def preprocess_image(image):
+    image = image.resize((224, 224))
+    img_array = np.array(image) / 255.0
+    if img_array.shape[-1] == 4:
+        # Remove alpha channel if present
+        img_array = img_array[..., :3]
+    return img_array.astype(np.float32)
 
-# Feature extractor: resize and flatten normalized pixels
-def extract_feature(image: Image.Image):
-    img = image.resize((64,64)).convert('RGB')
-    arr = np.array(img) / 255.0
-    return arr.flatten()
+def get_embedding(image):
+    preprocessed = preprocess_image(image)
+    batch = np.expand_dims(preprocessed, axis=0)
+    embedding = feature_extractor(batch)
+    return embedding.numpy()[0]
 
-# Spoilage days mapping
-spoilage_days = {
-    "Good": 5,
-    "Moderate": 2,
-    "Rotten": 0
-}
+# Dummy image URLs for demo (replace with real search or API calls)
+# Each category has 50 images for better training
+# Here URLs are just repeated to simulate 50 images per category
+# In real app, you'd use an API or scraping to get unique URLs
 
-# Download training images and prepare dataset
-@st.cache_data(show_spinner=False)
-def load_training_data():
-    features = []
-    labels = []
-    for label, urls in image_urls.items():
-        for url in urls:
-            try:
-                res = requests.get(url, timeout=5)
-                img = Image.open(BytesIO(res.content))
-                feat = extract_feature(img)
-                features.append(feat)
-                labels.append(label)
-            except Exception as e:
-                # Skip bad images
-                pass
-    return np.array(features), labels
+def generate_dummy_urls(base_url, count=50):
+    return [base_url + f"?v={i}" for i in range(count)]
 
-# Main app UI
-st.title("📱 SnapFresh: Food Freshness Detector")
-st.write("Upload a photo of your food item and get freshness status and estimated spoilage date.")
+def get_image_urls(food_item):
+    # Normally, you would query an API like Unsplash or Bing Image Search for food + category
+    # For demo, we simulate with example placeholder images repeated
 
-uploaded_file = st.file_uploader("Upload food image (jpg/jpeg/png):", type=["jpg", "jpeg", "png"])
+    base_good = "https://images.unsplash.com/photo-1574226516831-e1dff420e37c"  # fresh fruit
+    base_moderate = "https://images.unsplash.com/photo-1567306226416-28f0efdc88ce"  # slightly aged fruit
+    base_rotten = "https://images.unsplash.com/photo-1504674900247-0877df9cc836"  # rotten fruit
 
-if uploaded_file:
-    user_img = Image.open(uploaded_file)
-    st.image(user_img, caption="Your Food Image", width=300)
+    good_urls = generate_dummy_urls(base_good)
+    moderate_urls = generate_dummy_urls(base_moderate)
+    rotten_urls = generate_dummy_urls(base_rotten)
 
-    # Extract feature of uploaded image
-    user_feature = extract_feature(user_img)
-
-    # Load training data
-    train_features, train_labels = load_training_data()
-
-    # Predict category
-    prediction = knn_predict(user_feature, train_features, train_labels, k=3)
-
-    # Calculate spoilage date
-    days_left = spoilage_days.get(prediction, 0)
-    spoilage_date = datetime.date.today() + datetime.timedelta(days=days_left)
-
-    # Display results
-    freshness_color = {
-        "Good": "🟢 Safe to Consume",
-        "Moderate": "🟡 Consume Soon",
-        "Rotten": "🔴 Unsafe - Discard"
+    return {
+        "Good": good_urls,
+        "Moderate": moderate_urls,
+        "Rotten": rotten_urls,
     }
 
-    freshness_note = {
-        "Good": "Your food looks fresh. Enjoy!",
-        "Moderate": "Your food is moderately fresh. Consume soon.",
-        "Rotten": "Your food looks spoiled. Please discard."
-    }
+def download_images(urls):
+    images = []
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=5)
+            img = Image.open(BytesIO(response.content)).convert("RGB")
+            images.append(img)
+        except Exception:
+            # Skip invalid images
+            continue
+    return images
 
-    st.markdown(f"### Freshness Status: {freshness_color[prediction]}")
-    st.info(freshness_note[prediction])
-    if days_left > 0:
-        st.markdown(f"**Estimated Spoilage Date:** {spoilage_date.strftime('%Y-%m-%d')}")
+def train_knn_model(images_per_class):
+    X = []
+    y = []
+    for label, images in images_per_class.items():
+        for img in images:
+            emb = get_embedding(img)
+            X.append(emb)
+            y.append(label)
+    if not X:
+        return None
+    knn = KNeighborsClassifier(n_neighbors=5)
+    knn.fit(X, y)
+    return knn
+
+def estimate_spoilage_date(freshness):
+    today = datetime.date.today()
+    if freshness == "Good":
+        return today + datetime.timedelta(days=7)
+    elif freshness == "Moderate":
+        return today + datetime.timedelta(days=2)
     else:
-        st.markdown(f"**Spoilage Date:** Already spoiled!")
+        return today  # Rotten, already spoiled
 
-st.caption("SnapFresh • Prototype App • 2025")
+st.title("📱 SnapFresh - AI Food Freshness Detector")
+
+st.markdown("## Step 1: Enter your food item to train the model")
+food_item = st.text_input("What food item do you want to check freshness for?", placeholder="e.g., apple, banana, tomato")
+
+if food_item:
+    st.info(f"Training model for '{food_item}'... This may take about 30-60 seconds.")
+
+    urls_dict = get_image_urls(food_item)
+    images_per_class = {}
+
+    # Download and cache images per category
+    for category, urls in urls_dict.items():
+        with st.spinner(f"Downloading {len(urls)} images for '{category}'..."):
+            images = download_images(urls)
+        images_per_class[category] = images
+        st.success(f"Downloaded {len(images)} images for category: {category}")
+
+    # Train KNN model on embeddings
+    with st.spinner("Extracting features and training classifier..."):
+        knn_model = train_knn_model(images_per_class)
+
+    if knn_model is None:
+        st.error("Failed to train model due to no valid images.")
+        st.stop()
+
+    st.success("Model trained successfully! Now upload an image to predict freshness.")
+
+    # Step 2: Upload an image to test
+    uploaded_file = st.file_uploader("Upload a photo of your food item 🍎", type=["jpg", "jpeg", "png"])
+
+    if uploaded_file:
+        user_image = Image.open(uploaded_file).convert("RGB")
+
+        st.image(user_image, caption="Your Uploaded Food Item", width=250)
+
+        with st.spinner("Predicting freshness..."):
+            user_emb = get_embedding(user_image)
+            prediction = knn_model.predict([user_emb])[0]
+            probs = knn_model.predict_proba([user_emb])[0]
+            confidence = max(probs) * 100
+
+            spoil_date = estimate_spoilage_date(prediction)
+
+        freshness_emojis = {
+            "Good": "🟢 Fresh",
+            "Moderate": "🟡 Moderate",
+            "Rotten": "🔴 Rotten"
+        }
+
+        st.markdown(f"### Freshness Prediction: {freshness_emojis.get(prediction, '')} **{prediction}**")
+        st.write(f"Confidence: {confidence:.1f}%")
+        st.write(f"Estimated spoilage date: **{spoil_date.strftime('%Y-%m-%d')}**")
+
+        if prediction == "Good":
+            st.success("Your food item is fresh and safe to consume!")
+        elif prediction == "Moderate":
+            st.warning("Your food item is moderately fresh. Try to consume soon!")
+        else:
+            st.error("Your food item appears rotten. Dispose of it safely!")
+
+else:
+    st.info("Please enter a food item above to start training the model.")
