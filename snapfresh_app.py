@@ -1,112 +1,112 @@
 import streamlit as st
 import os
-import tempfile
+import shutil
 import requests
 from PIL import Image
 from io import BytesIO
-import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split
-from streamlit.components.v1 import html
+from sklearn.preprocessing import LabelEncoder
+import numpy as np
+from torchvision import transforms
+from duckduckgo_search import DDGS
 
-# Setup temp directory
-DATASET_DIR = os.path.join(tempfile.gettempdir(), "dataset")
-os.makedirs(DATASET_DIR, exist_ok=True)
+# Setup
+st.set_page_config(page_title="SnapFresh", page_icon="🍎", layout="centered")
 
-# Custom styling
-st.set_page_config(page_title="SnapFresh", layout="centered")
+# UI Title
+st.markdown("<h1 style='text-align: center;'>🍏 SnapFresh - Food Freshness Predictor</h1>", unsafe_allow_html=True)
+
+# Hide warnings and Streamlit elements
 st.markdown("""
-    <style>
-    .main-title {
-        text-align: center;
-        font-size: 3em;
-        font-weight: bold;
-        margin-bottom: 0.5em;
-    }
-    .stImage > img {
-        border-radius: 1em;
-        margin: auto;
-        max-width: 300px;
-        display: block;
-    }
-    .step-title {
-        font-size: 1.25em;
-        font-weight: bold;
-        margin-top: 1.5em;
-    }
-    </style>
+<style>
+    .st-emotion-cache-1v0mbdj.e115fcil1 { visibility: hidden; height: 0; }
+    footer { visibility: hidden; }
+    img { max-height: 200px !important; }
+</style>
 """, unsafe_allow_html=True)
 
-st.markdown("<div class='main-title'>🍏 SnapFresh: AI Food Freshness Detector</div>", unsafe_allow_html=True)
+# Image preprocessing
+transform = transforms.Compose([
+    transforms.Resize((64, 64)),
+    transforms.ToTensor()
+])
 
-# Preprocess function
-def preprocess_image(image_path):
-    image = Image.open(image_path).resize((64, 64))
-    return np.array(image).flatten() / 255.0
+# Function to download images silently
+def download_images(food, label, count=50):
+    query = f"{food} {label} food"
+    with DDGS() as ddgs:
+        results = ddgs.images(query, max_results=count)
+        os.makedirs(f"dataset/{label}", exist_ok=True)
+        i = 0
+        for result in results:
+            url = result.get("image")
+            if url:
+                try:
+                    img_data = requests.get(url, timeout=5).content
+                    img = Image.open(BytesIO(img_data)).convert("RGB")
+                    img = transform(img)
+                    save_img = transforms.ToPILImage()(img)
+                    save_img.save(f"dataset/{label}/{food}_{label}_{i}.jpg")
+                    i += 1
+                    if i >= count:
+                        break
+                except:
+                    continue
 
-# Download images
-def download_images(query, label, count=50):
-    url = f"https://source.unsplash.com/640x480/?{query}"
-    for i in range(count):
-        response = requests.get(url)
-        if response.status_code == 200:
-            img = Image.open(BytesIO(response.content))
-            img.save(os.path.join(DATASET_DIR, f"{label}_{i}.jpg"))
-
-# Step 1: Input food item
-st.markdown("<div class='step-title'>Step 1: Enter a food item</div>", unsafe_allow_html=True)
-food_item = st.text_input("e.g., banana, apple, tomato")
-
-# Step 2: Download images
-if st.button("🔽 Download Images"):
-    if not food_item:
-        st.warning("Please enter a food item before downloading.")
-    else:
-        st.info("Downloading images... Please wait (~1 minute)")
-        stages = ['rotten', 'moderate', 'good']
-        for stage in stages:
-            download_images(f"{food_item} {stage}", stage)
-        st.success("✅ Images downloaded successfully!")
-
-# Step 3: Train model and predict
-if st.button("🧠 Train Model & Predict"):
-    st.info("Training model with downloaded images...")
+# Extract features from images
+def extract_features_and_labels():
     X, y = [], []
+    for label in os.listdir("dataset"):
+        folder = os.path.join("dataset", label)
+        for file in os.listdir(folder):
+            try:
+                img_path = os.path.join(folder, file)
+                img = Image.open(img_path).convert("RGB")
+                img_tensor = transform(img)
+                X.append(img_tensor.view(-1).numpy())
+                y.append(label)
+            except:
+                continue
+    return np.array(X), np.array(y)
 
-    for filename in os.listdir(DATASET_DIR):
-        filepath = os.path.join(DATASET_DIR, filename)
-        try:
-            label = filename.split("_")[0]
-            features = preprocess_image(filepath)
-            X.append(features)
-            y.append(label)
-        except:
-            continue
+# Ask user for food type
+food_name = st.text_input("Enter the food item you want to check:", "")
 
-    if len(X) < 10:
-        st.warning("Not enough images to train. Try downloading again.")
-    else:
-        X = np.array(X)
-        y = np.array(y)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+if food_name:
+    # Download training images if not already present
+    if not os.path.exists("dataset"):
+        for label in ["fresh", "moderate", "rotten"]:
+            download_images(food_name, label, 50)
+
+    # Train model
+    X, y = extract_features_and_labels()
+    if len(set(y)) >= 2:
+        le = LabelEncoder()
+        y_encoded = le.fit_transform(y)
+        X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
 
         model = KNeighborsClassifier(n_neighbors=3)
         model.fit(X_train, y_train)
 
-        st.success("✅ Model trained successfully!")
+        # Upload image
+        uploaded_image = st.file_uploader("Upload an image of the food:", type=["jpg", "jpeg", "png"])
+        if uploaded_image:
+            img = Image.open(uploaded_image).convert("RGB")
+            st.image(img, caption="Uploaded Image", use_container_width=True)
 
-        st.markdown("<div class='step-title'>Step 4: Upload an image to predict freshness</div>", unsafe_allow_html=True)
-        uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "png", "jpeg"])
+            img_tensor = transform(img).view(1, -1).numpy()
+            prediction = model.predict(img_tensor)
+            predicted_label = le.inverse_transform(prediction)[0]
 
-        if uploaded_file is not None:
-            img = Image.open(uploaded_file).resize((64, 64))
-            st.image(img, caption="Uploaded Image", width=250)
-
-            img_array = np.array(img).flatten().reshape(1, -1) / 255.0
-            prediction = model.predict(img_array)
-
+            # Show result
             st.markdown(f"""
-                <h3 style='text-align: center;'>🌟 Predicted Freshness: <span style='color: green;'>{prediction[0].capitalize()}</span></h3>
+                <h3 style='text-align: center;'>🧠 Predicted Freshness: <span style='color:#00B300'>{predicted_label.title()}</span></h3>
             """, unsafe_allow_html=True)
+    else:
+        st.warning("Not enough images for training. Please try a different food item.")
+
+# Clean up dataset after session ends (optional)
+# shutil.rmtree("dataset", ignore_errors=True)
 
 
