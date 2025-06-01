@@ -1,99 +1,100 @@
 import streamlit as st
 import os
-import requests
-from PIL import Image
-from io import BytesIO
+import shutil
+import random
+from PIL import Image, ImageDraw
 import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import base64
-import random
+from sklearn.metrics import accuracy_score
 
-# Create a directory to store images
-os.makedirs("dataset", exist_ok=True)
+# -----------------------------
+# Create necessary folders
+if not os.path.exists("dataset"):
+    os.makedirs("dataset")
 
+# -----------------------------
+# Generate dummy images for testing
 def fetch_images(food_name, label, count=15):
-    search_url = f"https://www.google.com/search?q={food_name}+{label}+site:unsplash.com&tbm=isch"
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    for i in range(count):
+        img = Image.new("RGB", (64, 64), color=(random.randint(100, 255), 255, random.randint(0, 150)))
+        draw = ImageDraw.Draw(img)
+        draw.text((5, 25), label, fill=(0, 0, 0))
+        img.save(f"dataset/{label}_{i}.jpg")
 
-    try:
-        response = requests.get(search_url, headers=headers)
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
-        img_tags = soup.find_all("img")
+# -----------------------------
+# Preprocess image
+def preprocess_image(image_path):
+    img = Image.open(image_path).resize((64, 64))
+    return np.array(img).flatten()
 
-        downloaded = 0
-        for img_tag in img_tags:
-            img_url = img_tag.get("src")
-            if img_url and img_url.startswith("http"):
-                try:
-                    img_data = requests.get(img_url).content
-                    img = Image.open(BytesIO(img_data)).convert("RGB")
-                    img = img.resize((64, 64))
-                    img.save(f"dataset/{label}_{downloaded}.jpg")
-                    downloaded += 1
-                    if downloaded >= count:
-                        break
-                except Exception:
-                    continue
-    except Exception as e:
-        st.error(f"Image fetch error: {e}")
-
-def load_data():
+# -----------------------------
+# Train the KNN model
+def train_model():
     X, y = [], []
-    for file in os.listdir("dataset"):
-        if file.endswith(".jpg"):
-            label = file.split("_")[0]
-            path = os.path.join("dataset", file)
-            img = Image.open(path).resize((64, 64))
-            X.append(np.array(img).flatten())
+    for filename in os.listdir("dataset"):
+        if filename.endswith(".jpg"):
+            label = filename.split("_")[0]
+            img_array = preprocess_image(os.path.join("dataset", filename))
+            X.append(img_array)
             y.append(label)
-    return np.array(X), np.array(y)
+    if len(X) == 0:
+        return None, None
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    model = KNeighborsClassifier(n_neighbors=3)
+    model.fit(X_train, y_train)
+    acc = accuracy_score(y_test, model.predict(X_test))
+    return model, acc
 
-def spoilage_date_prediction(label):
-    days_map = {
-        "fresh": random.randint(4, 7),
-        "moderate": random.randint(2, 4),
-        "rotten": random.randint(0, 1)
-    }
-    return days_map.get(label, 3)
+# -----------------------------
+# Predict freshness
+def predict_freshness(model, img_file):
+    img = Image.open(img_file).resize((64, 64))
+    features = np.array(img).flatten().reshape(1, -1)
+    prediction = model.predict(features)[0]
+    spoilage = {"fresh": 5, "moderate": 2, "rotten": 0}
+    return prediction.upper(), spoilage.get(prediction.lower(), "?")
 
-st.set_page_config(page_title="SnapFresh", layout="centered")
-st.title("🍎 SnapFresh - Food Freshness Predictor")
+# -----------------------------
+# Streamlit UI
+st.title("🍌 SnapFresh – Food Freshness Estimator")
 
-# Ask for food name first
-food = st.text_input("Enter the name of a food item (e.g., Apple, Banana):")
+# Ask for food type first
+food_name = st.text_input("Enter the food name (e.g., Banana):")
 
-if food:
-    if st.button("Train Model"):
-        st.info("Fetching images and training model...")
+# Clear old dataset if needed
+if st.button("Clear Previous Data"):
+    shutil.rmtree("dataset")
+    os.makedirs("dataset")
+    st.success("Old dataset cleared.")
 
-        for label in ["fresh", "moderate", "rotten"]:
-            fetch_images(food, label, count=15)
-
-        X, y = load_data()
-        if len(X) == 0:
-            st.error("No images were loaded. Try another food.")
+# Generate dummy dataset & train
+if st.button("Train Model"):
+    if not food_name:
+        st.warning("Please enter a food name.")
+    else:
+        fetch_images(food_name, "fresh")
+        fetch_images(food_name, "moderate")
+        fetch_images(food_name, "rotten")
+        st.info("Dummy images generated.")
+        model, acc = train_model()
+        if model:
+            st.success(f"Model trained successfully with accuracy: {acc:.2f}")
         else:
-            le = LabelEncoder()
-            y_encoded = le.fit_transform(y)
+            st.error("Training failed. No images found.")
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
-            model = KNeighborsClassifier(n_neighbors=3)
-            model.fit(X_train, y_train)
-            st.success("Model trained successfully! 🎉")
-
-            uploaded_image = st.file_uploader("Upload a food image to check freshness", type=["jpg", "png"])
-            if uploaded_image:
-                image = Image.open(uploaded_image).resize((64, 64))
-                st.image(image, caption="Uploaded Image", width=150)
-                img_array = np.array(image).flatten().reshape(1, -1)
-                prediction = model.predict(img_array)
-                label = le.inverse_transform(prediction)[0]
-
-                days = spoilage_date_prediction(label)
-                st.subheader(f"🟢 Predicted Freshness: **{label.upper()}**")
-                st.write(f"🕒 Expected spoilage in **{days}** days.")
+# Image prediction
+st.subheader("📷 Upload an image to predict freshness")
+uploaded_image = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+if uploaded_image:
+    st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
+    if os.path.exists("dataset") and len(os.listdir("dataset")) > 0:
+        model, _ = train_model()
+        if model:
+            prediction, days = predict_freshness(model, uploaded_image)
+            st.markdown(f"### 🟢 Predicted Freshness: `{prediction}`")
+            st.markdown(f"### 🕒 Estimated spoilage in: `{days}` days")
+        else:
+            st.error("Model not trained. Please click 'Train Model' first.")
+    else:
+        st.error("No training data found. Please train the model first.")
