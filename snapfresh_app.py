@@ -1,111 +1,114 @@
-# SnapFresh: Accurate Food Freshness Detection using MobileNetV2
-
 import streamlit as st
 from PIL import Image
 import numpy as np
-import os
-import shutil
 import requests
 from io import BytesIO
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
-from tensorflow.keras import layers, models
-import datetime
+import os
 import random
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split
+import datetime
 
-# Set page config
 st.set_page_config(page_title="SnapFresh", layout="centered")
 
-# Step 1: Prepare directories
-DATA_DIR = "snapfresh_data"
-MODEL_PATH = "snapfresh_model.h5"
-CATEGORIES = ["fresh", "moderate", "rotten"]
+# Initialize session state
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "model" not in st.session_state:
+    st.session_state.model = None
+if "labels" not in st.session_state:
+    st.session_state.labels = []
 
-os.makedirs(DATA_DIR, exist_ok=True)
-for cat in CATEGORIES:
-    os.makedirs(os.path.join(DATA_DIR, cat), exist_ok=True)
-
-# Step 2: UI - Header
-st.markdown("<h1 style='text-align: center;'>\U0001F4F1 SnapFresh</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center;'>AI-powered Food Freshness Detection</h4>", unsafe_allow_html=True)
+# UI Header
+st.markdown("<h1 style='text-align: center;'>📱 SnapFresh</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center;'>Lightweight AI for Food Freshness Detection</h4>", unsafe_allow_html=True)
 st.divider()
 
-# Step 3: Train Section
-with st.expander("\U0001F52C Train Model (One-Time)", expanded=True):
-    food_item = st.text_input("Enter a food item (e.g., apple, tomato)", value="apple")
+# Input for food item
+food_item = st.text_input("Enter a food item (e.g., apple, banana)")
 
-    def download_sample_images(food):
-        search_urls = {
-            "fresh": [f"https://source.unsplash.com/224x224/?{food},fresh" for _ in range(10)],
-            "moderate": [f"https://source.unsplash.com/224x224/?{food},aging" for _ in range(10)],
-            "rotten": [f"https://source.unsplash.com/224x224/?{food},rotten" for _ in range(10)],
-        }
-        for cat in CATEGORIES:
-            for i, url in enumerate(search_urls[cat]):
-                try:
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        img = Image.open(BytesIO(response.content)).convert("RGB")
-                        img.save(os.path.join(DATA_DIR, cat, f"{cat}_{i}.jpg"))
-                except Exception as e:
-                    continue
+# URLs for stages
+STAGES = {
+    "fresh": f"https://source.unsplash.com/224x224/?fresh,{food_item}",
+    "moderate": f"https://source.unsplash.com/224x224/?moderate,{food_item}",
+    "rotten": f"https://source.unsplash.com/224x224/?rotten,{food_item}"
+}
 
-    if st.button("Download & Train Model"):
-        with st.spinner("Downloading images and training model..."):
-            download_sample_images(food_item)
-            datagen = ImageDataGenerator(
-                rescale=1./255,
-                rotation_range=20,
-                width_shift_range=0.1,
-                height_shift_range=0.1,
-                shear_range=0.1,
-                zoom_range=0.2,
-                horizontal_flip=True,
-                validation_split=0.2
-            )
+@st.cache_data(show_spinner=False)
+def download_stage_images():
+    data = []
+    labels = []
+    for label, url_template in STAGES.items():
+        for _ in range(10):
+            response = requests.get(url_template)
+            try:
+                img = Image.open(BytesIO(response.content)).convert("RGB")
+                img = img.resize((64, 64))
+                hist = extract_features(img)
+                data.append(hist)
+                labels.append(label)
+            except:
+                continue
+    return data, labels
 
-            train_gen = datagen.flow_from_directory(DATA_DIR, target_size=(224, 224), class_mode='categorical', subset='training')
-            val_gen = datagen.flow_from_directory(DATA_DIR, target_size=(224, 224), class_mode='categorical', subset='validation')
+def extract_features(img):
+    # Simple color histogram (flattened)
+    hist = np.array(img).mean(axis=(0, 1))  # RGB mean
+    return hist
 
-            base_model = MobileNetV2(input_shape=(224, 224, 3), include_top=False, weights='imagenet')
-            base_model.trainable = False
-            model = models.Sequential([
-                base_model,
-                layers.GlobalAveragePooling2D(),
-                layers.Dense(128, activation='relu'),
-                layers.Dropout(0.3),
-                layers.Dense(3, activation='softmax')
-            ])
+@st.cache_resource(show_spinner=True)
+def train_lightweight_model():
+    data, labels = download_stage_images()
+    model = KNeighborsClassifier(n_neighbors=3)
+    model.fit(data, labels)
+    return model, labels
 
-            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-            model.fit(train_gen, validation_data=val_gen, epochs=5, verbose=1)
-            model.save(MODEL_PATH)
-        st.success("Model trained and saved!")
+# Train model
+if food_item:
+    st.info(f"Training AI to detect {food_item} freshness...")
+    model, label_list = train_lightweight_model()
+    st.session_state.model = model
+    st.session_state.labels = label_list
+    st.success("Model trained successfully!")
+    st.divider()
 
-# Step 4: Prediction Section
-if os.path.exists(MODEL_PATH):
-    model = load_model(MODEL_PATH)
+# Upload image for prediction
+uploaded_file = st.file_uploader("Upload a food image to check freshness", type=["jpg", "png", "jpeg"])
 
-    uploaded_file = st.file_uploader("Upload a food image for prediction", type=["jpg", "jpeg", "png"])
-    if uploaded_file:
-        img = Image.open(uploaded_file).convert("RGB")
-        resized = img.resize((224, 224))
-        img_array = np.array(resized) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
+def predict_spoilage(freshness):
+    today = datetime.date.today()
+    if freshness == "fresh":
+        return today + datetime.timedelta(days=5)
+    elif freshness == "moderate":
+        return today + datetime.timedelta(days=2)
+    else:
+        return today
 
-        prediction = model.predict(img_array)[0]
-        label_idx = np.argmax(prediction)
-        label = CATEGORIES[label_idx]
+# Prediction
+if uploaded_file and st.session_state.model:
+    image = Image.open(uploaded_file).convert("RGB")
+    resized = image.resize((64, 64))
+    feat = extract_features(resized).reshape(1, -1)
 
-        spoilage_days_map = {"fresh": 5, "moderate": 2, "rotten": 0}
-        spoilage_date = datetime.datetime.now() + datetime.timedelta(days=spoilage_days_map[label])
+    prediction = st.session_state.model.predict(feat)[0]
+    spoil_date = predict_spoilage(prediction)
 
-        st.image(img, caption="Uploaded Image", width=300)
-        st.markdown(f"### Prediction: **{label.upper()}**")
-        st.markdown(f"**Estimated Spoilage Date:** {spoilage_date.strftime('%Y-%m-%d')}")
+    st.image(image, caption="Uploaded Image", use_container_width=True)
+    st.success(f"**Freshness Verdict:** {prediction.upper()}")
+    st.info(f"**Expected Spoilage Date:** {spoil_date.strftime('%Y-%m-%d')}")
 
-# Step 5: Footer
-st.divider()
-st.caption("SnapFresh • 2025 Prototype")
+    st.session_state.history.append({
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "result": prediction,
+        "spoilage": spoil_date.strftime("%Y-%m-%d")
+    })
+
+    st.divider()
+
+# History
+if st.session_state.history:
+    st.markdown("### 📂 Scan History")
+    for entry in reversed(st.session_state.history[-5:]):
+        st.markdown(f"- 🕒 {entry['timestamp']} — **{entry['result'].capitalize()}**, Spoils by {entry['spoilage']}")
+
+st.caption("SnapFresh • Lightweight Prototype • 2025")
