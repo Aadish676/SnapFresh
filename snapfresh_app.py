@@ -6,13 +6,14 @@ import numpy as np
 import os
 import shutil
 import requests
-import zipfile
+from io import BytesIO
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2
 from tensorflow.keras import layers, models
 import datetime
+import random
 
 # Set page config
 st.set_page_config(page_title="SnapFresh", layout="centered")
@@ -36,32 +37,35 @@ with st.expander("\U0001F52C Train Model (One-Time)", expanded=True):
     food_item = st.text_input("Enter a food item (e.g., apple, tomato)", value="apple")
 
     def download_sample_images(food):
-        urls = {
-            "fresh": [
-                "https://images.unsplash.com/photo-1571847149542-70c0cd361bc9",
-            ],
-            "moderate": [
-                "https://images.unsplash.com/photo-1614514561184-73f84ec4eb17",
-            ],
-            "rotten": [
-                "https://images.unsplash.com/photo-1606188074045-40d7ae4f4816",
-            ]
+        search_urls = {
+            "fresh": [f"https://source.unsplash.com/224x224/?{food},fresh" for _ in range(10)],
+            "moderate": [f"https://source.unsplash.com/224x224/?{food},aging" for _ in range(10)],
+            "rotten": [f"https://source.unsplash.com/224x224/?{food},rotten" for _ in range(10)],
         }
         for cat in CATEGORIES:
-            for i, url in enumerate(urls[cat]):
+            for i, url in enumerate(search_urls[cat]):
                 try:
-                    full_url = f"{url}?auto=format&fit=crop&w=224&q=80"
-                    response = requests.get(full_url, timeout=10)
+                    response = requests.get(url, timeout=10)
                     if response.status_code == 200:
                         img = Image.open(BytesIO(response.content)).convert("RGB")
                         img.save(os.path.join(DATA_DIR, cat, f"{cat}_{i}.jpg"))
                 except Exception as e:
-                    pass
+                    continue
 
     if st.button("Download & Train Model"):
-        with st.spinner("Downloading and training..."):
+        with st.spinner("Downloading images and training model..."):
             download_sample_images(food_item)
-            datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+            datagen = ImageDataGenerator(
+                rescale=1./255,
+                rotation_range=20,
+                width_shift_range=0.1,
+                height_shift_range=0.1,
+                shear_range=0.1,
+                zoom_range=0.2,
+                horizontal_flip=True,
+                validation_split=0.2
+            )
+
             train_gen = datagen.flow_from_directory(DATA_DIR, target_size=(224, 224), class_mode='categorical', subset='training')
             val_gen = datagen.flow_from_directory(DATA_DIR, target_size=(224, 224), class_mode='categorical', subset='validation')
 
@@ -70,11 +74,13 @@ with st.expander("\U0001F52C Train Model (One-Time)", expanded=True):
             model = models.Sequential([
                 base_model,
                 layers.GlobalAveragePooling2D(),
+                layers.Dense(128, activation='relu'),
+                layers.Dropout(0.3),
                 layers.Dense(3, activation='softmax')
             ])
 
             model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-            model.fit(train_gen, validation_data=val_gen, epochs=3, verbose=1)
+            model.fit(train_gen, validation_data=val_gen, epochs=5, verbose=1)
             model.save(MODEL_PATH)
         st.success("Model trained and saved!")
 
