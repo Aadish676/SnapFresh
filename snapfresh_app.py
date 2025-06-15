@@ -1,59 +1,67 @@
-import streamlit as st
-from PIL import Image
+# SnapFresh: ML-based Food Freshness Predictor
+# Note: This is a simplified prototype code for demonstration purposes.
+
 import os
-import requests
-from io import BytesIO
+import cv2
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from flask import Flask, request, jsonify, render_template
+from datetime import datetime
 
-# Dummy model prediction function (replace with real model)
+# Flask App Setup
+app = Flask(__name__)
+
+# Load Pre-trained ML Model (Assuming it's trained on spoilage phases)
+MODEL_PATH = 'snapfresh_model.h5'
+model = load_model(MODEL_PATH)
+
+# Image preprocessing function
+def preprocess_image(image_path):
+    image = cv2.imread(image_path)
+    image = cv2.resize(image, (224, 224))
+    image = image / 255.0  # normalize
+    image = np.expand_dims(image, axis=0)
+    return image
+
+# Prediction function
 def predict_freshness(image):
-    # This is a placeholder: add your real model inference here
-    return "Fresh"  # or "Moderate" / "Rotten"
+    classes = ['Fresh', 'Mid-Fresh', 'Spoiling', 'Spoiled']
+    prediction = model.predict(image)
+    predicted_class = classes[np.argmax(prediction)]
+    confidence = np.max(prediction)
+    return predicted_class, float(confidence)
 
-# Function to download sample images quietly
-def download_sample_images():
-    # Only run if folder doesn't exist or empty
-    folder = "sample_images"
-    if not os.path.exists(folder) or len(os.listdir(folder)) < 50:
-        os.makedirs(folder, exist_ok=True)
-        urls = [
-            # Add 50 food image URLs here for training dataset (shortened example)
-            "https://images.unsplash.com/photo-1504674900247-0877df9cc836",
-            "https://images.unsplash.com/photo-1525755662778-989d0524087e",
-            # Add more URLs to reach 50...
-        ]
-        for i, url in enumerate(urls):
-            try:
-                response = requests.get(url + "?w=500")  # smaller size
-                img = Image.open(BytesIO(response.content))
-                img.save(os.path.join(folder, f"food_{i+1}.jpg"))
-            except Exception as e:
-                print(f"Error downloading {url}: {e}")
+# Routes
+@app.route('/')
+def home():
+    return render_template('index.html')  # Basic upload UI
 
-def main():
-    st.set_page_config(page_title="SnapFresh - Food Freshness Detector", layout="centered")
+@app.route('/predict', methods=['POST'])
+def predict():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'})
 
-    st.title("SnapFresh - Food Freshness Detector")
-    name = st.text_input("Enter your name")
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Empty file'})
 
-    if not name:
-        st.warning("Please enter your name to proceed.")
-        return
+    filepath = os.path.join('uploads', file.filename)
+    file.save(filepath)
 
-    st.write(f"Hello, {name}! Upload an image of food to check freshness.")
+    # Process and predict
+    img = preprocess_image(filepath)
+    label, confidence = predict_freshness(img)
 
-    # Download dataset quietly (hidden spinner)
-    with st.spinner("Preparing dataset..."):
-        download_sample_images()
+    result = {
+        'predicted_freshness': label,
+        'confidence': f"{confidence*100:.2f}%",
+        'predicted_spoilage_date': (datetime.now().date()).isoformat() if label == 'Fresh' else 'Soon'
+    }
+    return jsonify(result)
 
-    uploaded_file = st.file_uploader("Upload a food image (jpg/png)", type=["jpg", "jpeg", "png"])
+# Run the app
+if __name__ == '__main__':
+    os.makedirs('uploads', exist_ok=True)
+    app.run(debug=True)
 
-    if uploaded_file:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", width=300)
-
-        if st.button("Predict Freshness"):
-            result = predict_freshness(image)
-            st.success(f"Prediction: {result}")
-
-if __name__ == "__main__":
-    main()
