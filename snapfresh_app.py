@@ -1,67 +1,48 @@
-# SnapFresh: ML-based Food Freshness Predictor
-# Note: This is a simplified prototype code for demonstration purposes.
-
-import os
-import cv2
+import streamlit as st
 import numpy as np
+from PIL import Image
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from flask import Flask, request, jsonify, render_template
-from datetime import datetime
 
-# Flask App Setup
-app = Flask(__name__)
+# Load model (assumes you have a trained model at this path)
+@st.cache_resource
+def load_model():
+    model = tf.keras.models.load_model("model/snapfresh_model.h5")
+    return model
 
-# Load Pre-trained ML Model (Assuming it's trained on spoilage phases)
-MODEL_PATH = 'snapfresh_model.h5'
-model = load_model(MODEL_PATH)
+model = load_model()
 
-# Image preprocessing function
-def preprocess_image(image_path):
-    image = cv2.imread(image_path)
-    image = cv2.resize(image, (224, 224))
-    image = image / 255.0  # normalize
-    image = np.expand_dims(image, axis=0)
-    return image
+# Define class labels (example labels)
+class_labels = ['Fresh', 'Moderate', 'Spoiled']
 
-# Prediction function
-def predict_freshness(image):
-    classes = ['Fresh', 'Mid-Fresh', 'Spoiling', 'Spoiled']
-    prediction = model.predict(image)
-    predicted_class = classes[np.argmax(prediction)]
-    confidence = np.max(prediction)
-    return predicted_class, float(confidence)
+st.set_page_config(page_title="SnapFresh - Food Freshness Predictor", layout="centered")
+st.title("SnapFresh \U0001F957")
+st.subheader("Predict food freshness from an image")
 
-# Routes
-@app.route('/')
-def home():
-    return render_template('index.html')  # Basic upload UI
+uploaded_file = st.file_uploader("Upload an image of the food item", type=["jpg", "jpeg", "png"])
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'})
+if uploaded_file is not None:
+    image = Image.open(uploaded_file).convert('RGB')
+    st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Empty file'})
+    # Preprocess image
+    image_resized = image.resize((224, 224))
+    img_array = np.array(image_resized) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
 
-    filepath = os.path.join('uploads', file.filename)
-    file.save(filepath)
+    # Make prediction
+    prediction = model.predict(img_array)[0]
+    predicted_class = class_labels[np.argmax(prediction)]
+    confidence = np.max(prediction) * 100
 
-    # Process and predict
-    img = preprocess_image(filepath)
-    label, confidence = predict_freshness(img)
+    st.success(f"**Prediction:** {predicted_class}")
+    st.info(f"**Confidence:** {confidence:.2f}%")
 
-    result = {
-        'predicted_freshness': label,
-        'confidence': f"{confidence*100:.2f}%",
-        'predicted_spoilage_date': (datetime.now().date()).isoformat() if label == 'Fresh' else 'Soon'
-    }
-    return jsonify(result)
+    if predicted_class == 'Spoiled':
+        st.warning("This item may not be safe to eat. Dispose responsibly.")
+    elif predicted_class == 'Moderate':
+        st.warning("Consume soon. May be nearing spoilage.")
+    else:
+        st.success("Looks fresh and good to consume!")
 
-# Run the app
-if __name__ == '__main__':
-    os.makedirs('uploads', exist_ok=True)
-    app.run(debug=True)
-
+st.markdown("---")
+st.caption("SnapFresh © 2025 | AI-powered food freshness detection")
