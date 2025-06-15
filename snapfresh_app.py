@@ -1,48 +1,36 @@
 import streamlit as st
-import numpy as np
 from PIL import Image
-import tensorflow as tf
+import random
 
-# Load model (assumes you have a trained model at this path)
-@st.cache_resource
-def load_model():
-    model = tf.keras.models.load_model("model/snapfresh_model.h5")
-    return model
+# Title
+st.title("SnapFresh - Food Freshness Predictor")
 
-model = load_model()
+# Description
+st.markdown("""
+SnapFresh helps you predict the freshness and expected spoilage date of food based on uploaded images.
+This version uses a mock algorithm for demonstration purposes.
+""")
 
-# Define class labels (example labels)
-class_labels = ['Fresh', 'Moderate', 'Spoiled']
-
-st.set_page_config(page_title="SnapFresh - Food Freshness Predictor", layout="centered")
-st.title("SnapFresh \U0001F957")
-st.subheader("Predict food freshness from an image")
-
-uploaded_file = st.file_uploader("Upload an image of the food item", type=["jpg", "jpeg", "png"])
+# Image Upload
+uploaded_file = st.file_uploader("Upload an image of food", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert('RGB')
+    image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    # Preprocess image
-    image_resized = image.resize((224, 224))
-    img_array = np.array(image_resized) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+    # Simulate prediction
+    freshness_levels = ["Fresh", "Stale", "Almost Spoiled", "Spoiled"]
+    predicted_freshness = random.choice(freshness_levels)
+    spoilage_days = {
+        "Fresh": random.randint(5, 7),
+        "Stale": random.randint(3, 4),
+        "Almost Spoiled": random.randint(1, 2),
+        "Spoiled": 0
+    }
 
-    # Make prediction
-    prediction = model.predict(img_array)[0]
-    predicted_class = class_labels[np.argmax(prediction)]
-    confidence = np.max(prediction) * 100
+    # Display Results
+    st.subheader("Predicted Freshness Level:")
+    st.success(predicted_freshness)
 
-    st.success(f"**Prediction:** {predicted_class}")
-    st.info(f"**Confidence:** {confidence:.2f}%")
-
-    if predicted_class == 'Spoiled':
-        st.warning("This item may not be safe to eat. Dispose responsibly.")
-    elif predicted_class == 'Moderate':
-        st.warning("Consume soon. May be nearing spoilage.")
-    else:
-        st.success("Looks fresh and good to consume!")
-
-st.markdown("---")
-st.caption("SnapFresh © 2025 | AI-powered food freshness detection")
+    st.subheader("Estimated Days Until Spoilage:")
+    st.info(f"{spoilage_days[predicted_freshness]} day(s)")
